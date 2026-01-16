@@ -1,5 +1,4 @@
 from __future__ import annotations
-from ast import Str
 import os, shutil, re, subprocess, argparse
 from pathlib import Path
 import cuetools as ct
@@ -40,16 +39,24 @@ CANDIDATE_ENCODINGS = [
 def main():
     args = parse_args()
     # collect albums
-    log(f"Collecting albums from {ROOT_DIR}")
+    log(f"========== Collecting albums from {ROOT_DIR} ==========", "INFO")
     albums = collect_albums(ROOT_DIR)
-    log(f"Found {len(albums)} albums")
+    log(f"Found {len(albums)} albums", "INFO")
+    log("================================================", "INFO")
     if args.collect_albums_only:
         with open(MAIN_DIR / "albums.txt", "w", encoding="utf-8") as f:
             for album in albums:
                 f.write(str(album) + "\n")
         return
     
+    log(f"========== Processing {len(albums)} albums ==========", "INFO")
     process_albums(albums)
+    log("================================================", "INFO")
+    log(f"========== Cleanup additional files ==========", "INFO")
+    cleanup_additional_files()
+    log("================================================", "INFO")
+    log("========== Processing completed ==========", "INFO")
+    log("================================================", "INFO")
 
 def parse_args():
     global DRY_RUN
@@ -84,28 +91,62 @@ def collect_raw_music_files(album: Path) -> list[Path]:
 
 def process_albums(albums: list[Path]):
     for album in albums:
+        log(f"========== Processing {album} ==========", "INFO")
         # 1. convert album to desired format
         try:# try to process the album
             files = [f for f in album.iterdir() if f.is_file()]
             if any(f.suffix == ".cue" for f in files): # check if album has cue file
+                log(f"========== Processing {album} with cue file ==========", "INFO")
                 process_cues(album)
             elif any(f.suffix == ".iso" for f in files): # check if album has iso file
+                log(f"========== Processing {album} with iso file ==========", "INFO")
                 raise NotImplementedError("ISO file is not supported yet")
             elif any(f.suffix == ".wav" for f in files): # check if album has wav file
+                log(f"========== Processing {album} with wav file ==========", "INFO")
                 wavs = [f for f in files if f.suffix == ".wav"]
                 for wav in wavs:
+                    log(f"Converting {wav} to flac", "INFO")
                     wav_to_flac(wav)
         except Exception as e:
             # 1.1 move the album to error directory
+            log(f"========== Processing {album} failed ==========", "ERROR")
             relative = album.relative_to(ROOT_DIR)
             error_path = ERROR_DIR / relative
             move_dir(album, error_path)
             continue
         # 2. move the album to completed directory
+        log(f"========== Processing {album} completed ==========", "INFO")
         relative = album.relative_to(ROOT_DIR)
         completed_path = OUTPUT_DIR / relative
         move_dir(album, completed_path)
         mark_as_processed(album)
+        log(f"========== Moving {album} to completed directory completed==========", "INFO")
+
+def cleanup_additional_files(): # there maybe some additional files. e.g. artist/album/disc1, artist/album/disc2, there are maybe some files in artist/album, we need to move them
+    additional_files = []
+    processed_dirs = set()
+    def traverse(dir: Path):
+        files = [f for f in dir.iterdir() if f.is_file()]
+        if len(files) > 0:
+            additional_files.extend(files)
+            processed_dirs.add(dir)
+        for subdir in dir.iterdir():
+            if subdir.is_dir():
+                traverse(subdir)
+    traverse(ROOT_DIR)
+    for file in additional_files:
+        relative = file.relative_to(ROOT_DIR)
+        dst_dir = OUTPUT_DIR / relative.parent
+        if not DRY_RUN:
+            if not dst_dir.exists():
+                dst_dir.mkdir(parents=True, exist_ok=True)
+            log(f"Move {file} to {dst_dir}", "INFO")
+            dst_file = dst_dir / file.name
+        else:
+            log(f"Expected to move {file} to {dst_dir}", "INFO")
+        shutil.move(file, dst_file)
+    for dir in processed_dirs:
+        mark_as_processed(dir)
 
 # ================= UTILS =================
 def safe_print(*args, **kwargs):
@@ -342,8 +383,11 @@ def wav_to_flac(wav: Path) -> None:
         str(wav.with_suffix(".flac")),
     ]
     if not DRY_RUN:
-        log(f"Converting {wav} to {wav.with_suffix('.flac')}", "INFO")
-        run(cmd, check=True)
+        if wav.with_suffix(".flac").exists():
+            log(f"{wav.with_suffix('.flac')} already exists", "WARNING")
+        else:
+            log(f"Converting {wav} to {wav.with_suffix('.flac')}", "INFO")
+            run(cmd)
         if ENABLE_DELETE:
             wav.unlink()
 
