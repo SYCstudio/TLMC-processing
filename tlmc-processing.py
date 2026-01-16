@@ -114,17 +114,15 @@ def process_albums(albums: list[Path]):
                 files = [f for f in album.iterdir() if f.is_file()]
                 if any(f.suffix == ".cue" for f in files): # check if album has cue file
                     log(f"========== Processing {album} with cue file ==========", "INFO")
-                    process_cues(album)
+                    process_cues(album, progress)
                 elif any(f.suffix == ".iso" for f in files): # check if album has iso file
                     log(f"========== Processing {album} with iso file ==========", "INFO")
                     raise NotImplementedError("ISO file is not supported yet")
                 else:
                     log(f"========== Processing {album} with additional music files ==========", "INFO")
-                    mf = [f for f in files if f.suffix in encode_need_to_convert]
-                    if len(mf) > 0:
-                        for file in mf:
-                            log(f"Converting {file} to flac", "INFO")
-                            music_to_flac(file)
+                    files_to_convert = [f for f in files if f.suffix in encode_need_to_convert]
+                    if len(files_to_convert) > 0:
+                        convert_musics_to_flac(files_to_convert, progress)
             except Exception as e:
                 # 1.1 move the album to error directory
                 log(f"========== Processing {album} failed ==========", "ERROR")
@@ -153,19 +151,29 @@ def cleanup_additional_files(): # there maybe some additional files. e.g. artist
             if subdir.is_dir():
                 traverse(subdir)
     traverse(ROOT_DIR)
-    for file in additional_files:
-        relative = file.relative_to(ROOT_DIR)
-        dst_dir = OUTPUT_DIR / relative.parent
-        if not DRY_RUN:
-            if not dst_dir.exists():
-                dst_dir.mkdir(parents=True, exist_ok=True)
-            log(f"Move {file} to {dst_dir}", "INFO")
-            dst_file = dst_dir / file.name
-            shutil.move(file, dst_file)
-            with open(MOVED_ADDITIONAL_FILES_FILE, "a", encoding="utf-8") as f:
-                f.write(str(file) + " -> " + str(dst_file) + "\n")
-        else:
-            log(f"Expected to move {file} to {dst_dir}", "INFO")
+    log(f"========== Cleaning up {len(additional_files)} additional files ==========", "INFO")
+    with Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn()
+    ) as progress:
+        total_files = len(additional_files)
+        file_task_id = progress.add_task("Cleaning up additional files", total=total_files)
+        for file in additional_files:
+            progress.update(file_task_id, advance=1)
+            relative = file.relative_to(ROOT_DIR)
+            dst_dir = OUTPUT_DIR / relative.parent
+            if not DRY_RUN:
+                if not dst_dir.exists():
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+                log(f"Move {file} to {dst_dir}", "INFO")
+                dst_file = dst_dir / file.name
+                shutil.move(file, dst_file)
+                with open(MOVED_ADDITIONAL_FILES_FILE, "a", encoding="utf-8") as f:
+                    f.write(str(file) + " -> " + str(dst_file) + "\n")
+            else:
+                log(f"Expected to move {file} to {dst_dir}", "INFO")
     for dir in processed_dirs:
         mark_as_processed(dir)
 
@@ -220,7 +228,7 @@ def move_dir(src_dir: Path, dst_dir: Path):
 
 # ================= CUE PROCESSING =================
 
-def process_cues(album: Path):
+def process_cues(album: Path, progress: Progress):
     cues = [f for f in album.iterdir() if f.suffix == ".cue"]
     for cue in cues:
         if fix_cue_encoding(cue) == False:
@@ -233,14 +241,18 @@ def process_cues(album: Path):
             raw_music = list(matched.keys())[0]
             cue_data = list(matched.values())[0][0]
             tracks = list(matched.values())[0][1]
-            split_audio(album, raw_music, cue_data, tracks, album)
+            split_audio(album, raw_music, cue_data, tracks, album, progress)
         else:
+            cue_task_id = progress.add_task("Splitting cues", total=len(matched))
             for raw_music, (cue_data, tracks) in matched.items():
-                split_audio(album, raw_music, cue_data, tracks, album / cue_data.title)
+                progress.update(cue_task_id, advance=1)
+                split_audio(album, raw_music, cue_data, tracks, album / cue_data.title, progress)
+            progress.remove_task(cue_task_id)
         for raw_music in matched.keys():
             files_need_to_delete.add(raw_music)
     if ENABLE_DELETE and not DRY_RUN:
         for file in files_need_to_delete:
+            log(f"Deleting {file}", "INFO")
             file.unlink()
 
 def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path]) -> Tuple[Dict[Path, Tuple[ct.AlbumData, List[Dict[str, Any]]]], Set[Path]]:
@@ -313,7 +325,7 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
             final_matched[raw_music] = (best_cue, tracks)
     return final_matched, files_need_to_delete
 
-def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: List[Dict[str, Any]], output_dir: Path) -> None:
+def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: List[Dict[str, Any]], output_dir: Path, progress: Progress) -> None:
     ffmpeg_cmds = []
     original_cwe = os.getcwd()
     working_dir = album.parent
@@ -355,8 +367,11 @@ def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: Li
             cmd.append(str(output_path))
             ffmpeg_cmds.append(cmd)
         #pprint(ffmpeg_cmds)
+        track_task_id = progress.add_task("Splitting tracks", total=len(ffmpeg_cmds))
         for cmd in ffmpeg_cmds:
+            progress.update(track_task_id, advance=1)
             run(cmd)
+        progress.remove_task(track_task_id)
     finally:
         os.chdir(original_cwe)
 
@@ -396,7 +411,14 @@ def parse_cue_file(cue: Path)-> ct.AlbumData:
     return ct.loads(text)
 
 # ================= wav to flac =================
-def music_to_flac(file: Path) -> None:
+def convert_musics_to_flac(files: List[Path], progress: Progress) -> None:
+    convert_task_id = progress.add_task("Converting music files to flac", total=len(files))
+    for file in files:
+        progress.update(convert_task_id, advance=1)
+        convert_music_to_flac(file)
+    progress.remove_task(convert_task_id)
+
+def convert_music_to_flac(file: Path) -> None:
     cmd = [
         "ffmpeg",
         "-y",
