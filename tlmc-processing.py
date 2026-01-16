@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple, Set
 from datetime import datetime
 from difflib import SequenceMatcher
 from pprint import pprint
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, Live, Text
 
 # ================= CONFIG =================
 MAIN_DIR = Path(__file__).parent
@@ -79,16 +79,19 @@ def parse_args():
 def collect_albums(start_dir: Path) -> list[Path]:
     albums = []
     music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".wv"]
-    def traverse(dir: Path):
+    def traverse(dir: Path, live: Live):
         nonlocal albums
+        live.update(Text(f"Traversing: Albums collected: {len(albums)} at {dir}"))
         files = [f for f in dir.iterdir() if f.is_file()]
         if any(f.suffix in music_suffix for f in files):
             albums.append(dir)
         else:
             for subdir in dir.iterdir():
                 if subdir.is_dir():
-                    traverse(subdir)
-    traverse(start_dir)
+                    traverse(subdir, live)
+
+    with Live(refresh_per_second=4) as live:  # 每秒刷新 4 次
+        traverse(start_dir, live)
     return albums
 
 def collect_raw_music_files(album: Path) -> list[Path]:
