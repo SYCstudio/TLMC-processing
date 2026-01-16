@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple, Set
 from datetime import datetime
 from difflib import SequenceMatcher
 from pprint import pprint
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
 # ================= CONFIG =================
 MAIN_DIR = Path(__file__).parent
@@ -97,39 +98,48 @@ def collect_raw_music_files(album: Path) -> list[Path]:
 
 def process_albums(albums: list[Path]):
     encode_need_to_convert = [".wav", ".wv", ".ape", ".tta", ".alac"]
-    for album in albums:
-        log(f"========== Processing {album} ==========", "INFO")
-        # 1. convert album to desired format
-        try:# try to process the album
-            files = [f for f in album.iterdir() if f.is_file()]
-            if any(f.suffix == ".cue" for f in files): # check if album has cue file
-                log(f"========== Processing {album} with cue file ==========", "INFO")
-                process_cues(album)
-            elif any(f.suffix == ".iso" for f in files): # check if album has iso file
-                log(f"========== Processing {album} with iso file ==========", "INFO")
-                raise NotImplementedError("ISO file is not supported yet")
-            else:
-                log(f"========== Processing {album} with additional music files ==========", "INFO")
-                mf = [f for f in files if f.suffix in encode_need_to_convert]
-                if len(mf) > 0:
-                    for file in mf:
-                        log(f"Converting {file} to flac", "INFO")
-                        music_to_flac(file)
-        except Exception as e:
-            # 1.1 move the album to error directory
-            log(f"========== Processing {album} failed ==========", "ERROR")
-            log(f"Error: {e}", "ERROR")
+    with Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn()
+    ) as progress:
+        total_albums = len(albums)
+        album_task_id = progress.add_task("Processing Albums", total=total_albums)
+        for album in albums:
+            progress.update(album_task_id, advance=1)
+            log(f"========== Processing {album} ==========", "INFO")
+            # 1. convert album to desired format
+            try:# try to process the album
+                files = [f for f in album.iterdir() if f.is_file()]
+                if any(f.suffix == ".cue" for f in files): # check if album has cue file
+                    log(f"========== Processing {album} with cue file ==========", "INFO")
+                    process_cues(album)
+                elif any(f.suffix == ".iso" for f in files): # check if album has iso file
+                    log(f"========== Processing {album} with iso file ==========", "INFO")
+                    raise NotImplementedError("ISO file is not supported yet")
+                else:
+                    log(f"========== Processing {album} with additional music files ==========", "INFO")
+                    mf = [f for f in files if f.suffix in encode_need_to_convert]
+                    if len(mf) > 0:
+                        for file in mf:
+                            log(f"Converting {file} to flac", "INFO")
+                            music_to_flac(file)
+            except Exception as e:
+                # 1.1 move the album to error directory
+                log(f"========== Processing {album} failed ==========", "ERROR")
+                log(f"Error: {e}", "ERROR")
+                relative = album.relative_to(ROOT_DIR)
+                error_path = ERROR_DIR / relative
+                move_dir(album, error_path)
+                continue
+            # 2. move the album to completed directory
+            log(f"========== Processing {album} completed ==========", "INFO")
             relative = album.relative_to(ROOT_DIR)
-            error_path = ERROR_DIR / relative
-            move_dir(album, error_path)
-            continue
-        # 2. move the album to completed directory
-        log(f"========== Processing {album} completed ==========", "INFO")
-        relative = album.relative_to(ROOT_DIR)
-        completed_path = OUTPUT_DIR / relative
-        move_dir(album, completed_path)
-        mark_as_processed(album)
-        log(f"========== Moving {album} to completed directory completed==========", "INFO")
+            completed_path = OUTPUT_DIR / relative
+            move_dir(album, completed_path)
+            mark_as_processed(album)
+            log(f"========== Moving {album} to completed directory completed==========", "INFO")
 
 def cleanup_additional_files(): # there maybe some additional files. e.g. artist/album/disc1, artist/album/disc2, there are maybe some files in artist/album, we need to move them
     additional_files = []
