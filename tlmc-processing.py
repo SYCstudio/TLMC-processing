@@ -110,6 +110,7 @@ def process_albums(albums: list[Path]):
         except Exception as e:
             # 1.1 move the album to error directory
             log(f"========== Processing {album} failed ==========", "ERROR")
+            log(f"Error: {e}", "ERROR")
             relative = album.relative_to(ROOT_DIR)
             error_path = ERROR_DIR / relative
             move_dir(album, error_path)
@@ -350,7 +351,7 @@ def fix_cue_encoding(cue: Path):
     if text is None:
         log(f"Cannot decode {cue}", "ERROR")
         return False
-    if enc.startswith("utf-8"):
+    if enc == "utf-8":
         return True
     log(f"Fixing {cue} encoding ({enc} → utf-8)")
     if not DRY_RUN:
@@ -359,7 +360,7 @@ def fix_cue_encoding(cue: Path):
     return True
 
 def read_cue_text(cue: Path) -> str:
-    text = cue.read_text(encoding="utf-8")
+    text = cue.read_text(encoding="utf-8-sig")
     result = ""
     for line in text.splitlines():
         if "REM " in line:
