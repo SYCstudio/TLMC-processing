@@ -211,10 +211,25 @@ def calculate_similarity(str1: str, str2: str) -> float:
     """计算两个字符串的相似度，返回 0.0 到 1.0 之间的值"""
     return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
 
+def escape_rsync_pattern(pattern):
+    """
+    正确的 rsync 字面量转义函数
+    避免重复替换问题
+    """
+    result = []
+    
+    for char in pattern:
+        if char in ['*', '?', '[', ']']:
+            result.append(f'[{char}]')
+        else:
+            result.append(char)
+    
+    return ''.join(result)
+
 def mark_as_processed(album: Path):
     relative = album.relative_to(ROOT_DIR)
     with open(PROCESSED_FILE, "a", encoding="utf-8") as f:
-        f.write(str(relative) + "\n")
+        f.write(escape_rsync_pattern(str(relative)) + "/" + "\n")
     log(f"Marked {album} as processed", "INFO")
 
 def move_dir(src_dir: Path, dst_dir: Path):
