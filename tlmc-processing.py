@@ -16,6 +16,8 @@ DRY_RUN = False
 ENABLE_SPLIT = True
 ENABLE_DELETE = True
 LOG_FILE = MAIN_DIR / "processing.log"
+ERROR_LOG_FILE = MAIN_DIR / "error.log"
+MOVED_ADDITIONAL_FILES_FILE = MAIN_DIR / "moved_additional_files.log"
 PROCESSED_FILE = MAIN_DIR / ".processed"
 
 if not ERROR_DIR.exists():
@@ -24,6 +26,10 @@ if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 if not LOG_FILE.exists():
     LOG_FILE.touch()
+if not ERROR_LOG_FILE.exists():
+    ERROR_LOG_FILE.touch()
+if not MOVED_ADDITIONAL_FILES_FILE.exists():
+    MOVED_ADDITIONAL_FILES_FILE.touch()
 
 CANDIDATE_ENCODINGS = [
     "utf-8",
@@ -71,7 +77,7 @@ def parse_args():
 # 预先收集所有专辑
 def collect_albums(start_dir: Path) -> list[Path]:
     albums = []
-    music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac"]
+    music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".wv"]
     def traverse(dir: Path):
         nonlocal albums
         files = [f for f in dir.iterdir() if f.is_file()]
@@ -90,6 +96,7 @@ def collect_raw_music_files(album: Path) -> list[Path]:
     return [f for f in files if f.suffix in raw_music_suffix]
 
 def process_albums(albums: list[Path]):
+    encode_need_to_convert = [".wav", ".wv", ".ape", ".tta", ".alac"]
     for album in albums:
         log(f"========== Processing {album} ==========", "INFO")
         # 1. convert album to desired format
@@ -101,12 +108,13 @@ def process_albums(albums: list[Path]):
             elif any(f.suffix == ".iso" for f in files): # check if album has iso file
                 log(f"========== Processing {album} with iso file ==========", "INFO")
                 raise NotImplementedError("ISO file is not supported yet")
-            elif any(f.suffix == ".wav" for f in files): # check if album has wav file
-                log(f"========== Processing {album} with wav file ==========", "INFO")
-                wavs = [f for f in files if f.suffix == ".wav"]
-                for wav in wavs:
-                    log(f"Converting {wav} to flac", "INFO")
-                    wav_to_flac(wav)
+            else:
+                log(f"========== Processing {album} with additional music files ==========", "INFO")
+                mf = [f for f in files if f.suffix in encode_need_to_convert]
+                if len(mf) > 0:
+                    for file in mf:
+                        log(f"Converting {file} to flac", "INFO")
+                        music_to_flac(file)
         except Exception as e:
             # 1.1 move the album to error directory
             log(f"========== Processing {album} failed ==========", "ERROR")
@@ -143,9 +151,11 @@ def cleanup_additional_files(): # there maybe some additional files. e.g. artist
                 dst_dir.mkdir(parents=True, exist_ok=True)
             log(f"Move {file} to {dst_dir}", "INFO")
             dst_file = dst_dir / file.name
+            shutil.move(file, dst_file)
+            with open(MOVED_ADDITIONAL_FILES_FILE, "a", encoding="utf-8") as f:
+                f.write(str(file) + " -> " + str(dst_file) + "\n")
         else:
             log(f"Expected to move {file} to {dst_dir}", "INFO")
-        shutil.move(file, dst_file)
     for dir in processed_dirs:
         mark_as_processed(dir)
 
@@ -175,6 +185,9 @@ def log(msg: str, level: str="INFO"):
     if not DRY_RUN:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        if level == "ERROR":
+            with open(ERROR_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
 
 def calculate_similarity(str1: str, str2: str) -> float:
     """计算两个字符串的相似度，返回 0.0 到 1.0 之间的值"""
@@ -373,24 +386,24 @@ def parse_cue_file(cue: Path)-> ct.AlbumData:
     return ct.loads(text)
 
 # ================= wav to flac =================
-def wav_to_flac(wav: Path) -> None:
+def music_to_flac(file: Path) -> None:
     cmd = [
         "ffmpeg",
         "-y",
         "-loglevel", "error",
-        "-i", str(wav),
+        "-i", str(file),
         "-c:a", "flac",
         "-compression_level", "8",
-        str(wav.with_suffix(".flac")),
+        str(file.with_suffix(".flac")),
     ]
     if not DRY_RUN:
-        if wav.with_suffix(".flac").exists():
-            log(f"{wav.with_suffix('.flac')} already exists", "WARNING")
+        if file.with_suffix(".flac").exists():
+            log(f"{file.with_suffix('.flac')} already exists", "WARNING")
         else:
-            log(f"Converting {wav} to {wav.with_suffix('.flac')}", "INFO")
+            log(f"Converting {file} to {file.with_suffix('.flac')}", "INFO")
             run(cmd)
         if ENABLE_DELETE:
-            wav.unlink()
+            file.unlink()
 
 if __name__ == "__main__":
     main()
