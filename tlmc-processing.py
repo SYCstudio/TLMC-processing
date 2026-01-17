@@ -48,18 +48,12 @@ CANDIDATE_ENCODINGS = [
 ]
 
 def main():
-    args = parse_args()
+    initialize_files()
     # collect albums
     log(f"========== Collecting albums from {ROOT_DIR} ==========", "INFO")
     albums = collect_albums(ROOT_DIR)
     log(f"Found {len(albums)} albums", "INFO")
     log("================================================", "INFO")
-    if args.collect_albums_only:
-        with open(MAIN_DIR / "albums.txt", "w", encoding="utf-8") as f:
-            for album in albums:
-                f.write(str(album) + "\n")
-        return
-    
     log(f"========== Processing {len(albums)} albums ==========", "INFO")
     process_albums(albums)
     log("================================================", "INFO")
@@ -69,15 +63,31 @@ def main():
     log("========== Processing completed ==========", "INFO")
     log("================================================", "INFO")
 
-def parse_args():
-    global DRY_RUN
-    parser = argparse.ArgumentParser(description="Music Library Processing")
-    parser.add_argument("--dry-run", action="store_true", help="Dry run mode")
-    parser.add_argument("--collect-albums-only", action="store_true", help="Collect albums only")
-    parse = parser.parse_args()
-    if parse.dry_run:
-        DRY_RUN = True
-    return parse
+
+def archive_old_file(file_path, dst_dir: Path):
+    """如果文件存在且有内容，则将其移动到日期目录下"""
+    if file_path.exists() and file_path.stat().st_size > 0:
+        # 移动文件
+        try:
+            shutil.move(str(file_path), str(dst_dir))
+            return True
+        except Exception as e:
+            return False
+    return False
+
+def initialize_files():
+    """初始化所有文件，归档旧文件"""
+    # 需要归档的文件列表及其类型
+    files_to_archive = [
+        LOG_FILE, ERROR_LOG_FILE, MOVED_ADDITIONAL_FILES_FILE, ERROR_PROCESSED_FILE
+    ]
+    # 获取当前日期作为目录名
+    today = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dir = MAIN_DIR / "log" / today
+    if not dir.exists():
+        dir.mkdir(parents=True, exist_ok=True)
+    for file_path in files_to_archive:
+        archive_old_file(file_path, dir)
 
 # 预先收集所有专辑
 def collect_albums(start_dir: Path) -> list[Path]:
