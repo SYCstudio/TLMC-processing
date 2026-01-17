@@ -277,15 +277,14 @@ def process_cues(album: Path, progress: Progress):
     if len(matched) > 0 and ENABLE_SPLIT:
         if len(matched) == 1:
             raw_music = list(matched.keys())[0]
-            cue_data = list(matched.values())[0][0]
-            tracks = list(matched.values())[0][1]
-            split_audio(album, raw_music, cue_data, tracks, album, progress)
+            album_title, album_performer, tracks = list(matched.values())[0]
+            split_audio(album, raw_music, album_title, album_performer, tracks, album, progress)
         else:
             cue_task_id = progress.add_task("Splitting cues", total=len(matched))
             try:
-                for raw_music, (cue_data, tracks) in matched.items():
+                for raw_music, (album_title, album_performer, tracks) in matched.items():
                     progress.update(cue_task_id, advance=1)
-                    split_audio(album, raw_music, cue_data, tracks, album / cue_data.title, progress)
+                    split_audio(album, raw_music, album_title, album_performer, tracks, album / album_title, progress)
             finally:
                 progress.remove_task(cue_task_id)
         for raw_music in matched.keys():
@@ -295,30 +294,20 @@ def process_cues(album: Path, progress: Progress):
             log(f"Deleting {file}", "INFO")
             file.unlink()
 
-def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path]) -> Tuple[Dict[Path, Tuple[ct.AlbumData, List[Dict[str, Any]]]], Set[Path]]:
+def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path]) -> Tuple[Dict[Path, Tuple[str, str, List[Dict[str, Any]]]], Set[Path]]:
     files_need_to_delete: Set[Path] = set()
     # give each raw music its candidate cue file
-    matched: Dict[Path, List[Tuple[ct.AlbumData, Dict[str, Any]]]] = dict()
+    matched: Dict[Path, List[Tuple[str, str, List[Dict[str, Any]]]]] = dict()
     for raw_music in raw_music_files:
         matched[raw_music] = []
     
     # parsing the cue file, and match cue to raw music file
     for cue in cues:
-        cue_data = parse_cue_file(cue)
+        album_title, album_performer, tracks = parse_cue_file(cue)
         expected_raw_files: Set[Path] = set()
-        tracks: List[Dict[str, Any]] = []
-        for track in cue_data.tracks:
-            data = {
-                'file' : track.file,
-                'track_num' : track.track,
-                'title' : track.title,
-                'performer' : track.performer,
-                'start_time' : track.index01.seconds,
-                'end_time' : None
-            }
-            tracks.append(data)
-            expected_raw_files.add(track.file)
-        if len(expected_raw_files) == len(cue_data.tracks):
+        for track in tracks:
+            expected_raw_files.add(track['file'])
+        if len(expected_raw_files) == len(tracks):
             # no need to split, the music files are already cut into tracks
             log(f"No need to split {cue}, all tracks are already cut into tracks", "INFO")
             continue
@@ -333,9 +322,6 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
             files_need_to_delete.add(expected_raw_file) # if true, the combined file need to be deleted
             log(f"No need to split {cue}, all tracks are already cut into tracks, but the combined file need to be deleted", "INFO")
             continue
-        # complete the end time for each track
-        for track in tracks[:-1]:
-            track['end_time'] = tracks[tracks.index(track) + 1]['start_time']
         # choose the best raw music file for the cue
         best_score = 0.0
         best_raw_music = None
@@ -345,27 +331,29 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
                 best_score = score
                 best_raw_music = raw_music
         if best_raw_music is not None:
-            matched[best_raw_music].append((cue_data, tracks))
+            matched[best_raw_music].append((album_title, album_performer, tracks))
             log(f"Matched {cue} to {best_raw_music}", "INFO")
     # delete the raw music files that are not matched in the matched dict
     matched = {raw_music: lst for raw_music, lst in matched.items() if len(lst) > 0}
-    final_matched: Dict[Path, Tuple[ct.AlbumData, List[Dict[str, Any]]]] = dict()
+    final_matched: Dict[Path, Tuple[str, str, List[Dict[str, Any]]]] = dict()
     for raw_music, lst in matched.items():
         if len(lst) == 1:
             final_matched[raw_music] = lst[0]
         else:
             # choose the best cue file for the raw music
             best_score = 0.0
-            best_cue = None
-            for cue_data, tracks in lst:
-                score = calculate_similarity(cue_data.title, raw_music.name)
+            best_title = None
+            best_performer = None
+            for album_title, album_performer, tracks in lst:
+                score = calculate_similarity(album_title, raw_music.name)
                 if score > best_score:
                     best_score = score
-                    best_cue = cue_data
-            final_matched[raw_music] = (best_cue, tracks)
+                    best_title = album_title
+                    best_performer = album_performer
+            final_matched[raw_music] = (best_title, best_performer, tracks)
     return final_matched, files_need_to_delete
 
-def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: List[Dict[str, Any]], output_dir: Path, progress: Progress) -> None:
+def split_audio(album: Path, raw_audio: Path, album_title: str, album_performer: str, tracks: List[Dict[str, Any]], output_dir: Path, progress: Progress) -> None:
     ffmpeg_cmds = []
     original_cwe = os.getcwd()
     working_dir = album.parent
@@ -400,10 +388,10 @@ def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: Li
             if track['performer']:
                 cmd.extend(["-metadata", f"artist={track['performer']}"])
             cmd.extend(["-metadata", f"track={track['track_num']}"])
-            if cue_data.title:
-                cmd.extend(["-metadata", f"album={cue_data.title}"])
-            if cue_data.performer:
-                cmd.extend(["-metadata", f"album_artist={cue_data.performer}"])
+            if album_title:
+                cmd.extend(["-metadata", f"album={album_title}"])
+            if album_performer:
+                cmd.extend(["-metadata", f"album_artist={album_performer}"])
             cmd.append(str(output_path))
             ffmpeg_cmds.append(cmd)
         #pprint(ffmpeg_cmds)
@@ -448,9 +436,82 @@ def read_cue_text(cue: Path) -> str:
         result += line + "\n"
     return result
 
-def parse_cue_file(cue: Path)-> ct.AlbumData:
+def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
     text = read_cue_text(cue)
-    return ct.loads(text)
+    album_title: str = None
+    album_performer: str = None
+    tracks: List[Dict[str, Any]] = []
+    try:
+        cue_data = ct.loads(text)
+        if cue_data.title:
+            album_title = cue_data.title
+        if cue_data.performer:
+            album_performer = cue_data.performer
+        for track in tracks:
+            data = {
+                'file' : track.file,
+                'track_num' : track.track,
+                'title' : track.title,
+                'performer' : track.performer,
+                'start_time' : track.index01.seconds,
+                'end_time' : None
+            }
+            tracks.append(data)
+        for track in tracks[:-1]:
+            track['end_time'] = tracks[tracks.index(track) + 1]['start_time']
+    except Exception as e:
+        log(f"Failed to parse {cue} with cue tools ({e!s}), fallback to manul parsering", "WARNING")
+        FILE_RE = re.compile(r'^FILE\s+"(.+?)"\s+', re.IGNORECASE)
+        TRACK_RE = re.compile(r'^\s+TRACK\s+(\d+)\s+', re.IGNORECASE)
+        TITLE_RE = re.compile(r'^\s+TITLE\s+"(.+?)"', re.IGNORECASE)
+        PERFORMER_RE = re.compile(r'^\s+PERFORMER\s+"(.+?)"', re.IGNORECASE)
+        INDEX_RE = re.compile(r'^\s+INDEX\s+(\d+)\s+(\d+):(\d+):(\d+)', re.IGNORECASE)
+        current_track = None
+        current_performer = None
+        current_file = None
+        for line in text.splitlines():
+            line = line.strip()
+            m = PERFORMER_RE.match(line)
+            if m:
+                current_performer = m.group(1)
+                if album_performer is None:
+                    album_performer = current_performer
+            m = FILE_RE.match(line)
+            if m:
+                current_file = m.group(1)
+            m = TRACK_RE.match(line)
+            if m:
+                if current_track:
+                    tracks.append(current_track)
+                track_num = int(m.group(1))
+                current_track = {
+                    'file': current_file,
+                    'track_num': track_num,
+                    'title': None,
+                    'performer': current_performer,
+                    'start_time': None,
+                    'end_time': None
+                }
+            m = TITLE_RE.match(line)
+            if m:
+                if album_title is None:
+                    album_title = m.group(1)
+                if current_track is not None:
+                    current_track['title'] = m.group(1)
+            m = INDEX_RE.match(line)
+            if m:
+                if current_track is not None:
+                    index_num = int(m.group(1))
+                    minutes = int(m.group(2))
+                    seconds = int(m.group(3))
+                    frames = int(m.group(4))
+                    total_seconds = minutes * 60 + seconds + frames / 75.0
+                    current_track['start_time'] = total_seconds
+        if current_track is not None:
+            tracks.append(current_track)
+        for track in tracks[:-1]:
+            track['end_time'] = tracks[tracks.index(track) + 1]['start_time']
+    return album_title, album_performer, tracks
 
 # ================= wav to flac =================
 def convert_musics_to_flac(files: List[Path], progress: Progress) -> None:
