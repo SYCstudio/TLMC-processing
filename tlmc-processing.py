@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os, shutil, re, subprocess, argparse
 from pathlib import Path
+import hashlib
 import cuetools as ct
 from typing import Any, Dict, List, Tuple, Set
 from datetime import datetime
@@ -20,6 +21,7 @@ LOG_FILE = MAIN_DIR / "processing.log"
 ERROR_LOG_FILE = MAIN_DIR / "error.log"
 MOVED_ADDITIONAL_FILES_FILE = MAIN_DIR / "moved_additional_files.log"
 PROCESSED_FILE = MAIN_DIR / ".processed"
+ERROR_PROCESSED_FILE = MAIN_DIR / ".error_processed"
 
 if not ERROR_DIR.exists():
     ERROR_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,6 +33,8 @@ if not ERROR_LOG_FILE.exists():
     ERROR_LOG_FILE.touch()
 if not MOVED_ADDITIONAL_FILES_FILE.exists():
     MOVED_ADDITIONAL_FILES_FILE.touch()
+if not ERROR_PROCESSED_FILE.exists():
+    ERROR_PROCESSED_FILE.touch()
 
 CANDIDATE_ENCODINGS = [
     "utf-8",
@@ -133,6 +137,8 @@ def process_albums(albums: list[Path]):
                 relative = album.relative_to(ROOT_DIR)
                 error_path = ERROR_DIR / relative
                 move_dir(album, error_path)
+                with open(ERROR_PROCESSED_FILE, "a", encoding="utf-8") as f:
+                    f.write(escape_rsync_pattern(str(relative)) + "/" + "\n")
                 continue
             # 2. move the album to completed directory
             log(f"========== Processing {album} completed ==========", "INFO")
@@ -244,6 +250,20 @@ def move_dir(src_dir: Path, dst_dir: Path):
     shutil.move(src_dir, dst_dir)
     log(f"Moved {src_dir} to {dst_dir}", "INFO")
 
+def sanitize_filename(name: str, max_bytes=200) -> str:
+    # 替换非法字符
+    safe = re.sub(r'[<>:"/\\|?*]', "_", name)
+    # 转为 utf-8 bytes 检查长度
+    enc = safe.encode("utf-8")
+    if len(enc) > max_bytes:
+        # 生成 8 位 sha1 摘要
+        h = hashlib.sha1(enc).hexdigest()[:8]
+        # 截断原始 safe 字符串
+        while len(safe.encode("utf-8")) > max_bytes - len(h) - 1:
+            safe = safe[:-1]
+        safe = f"{safe}_{h}"
+    return safe
+
 # ================= CUE PROCESSING =================
 
 def process_cues(album: Path, progress: Progress):
@@ -262,10 +282,12 @@ def process_cues(album: Path, progress: Progress):
             split_audio(album, raw_music, cue_data, tracks, album, progress)
         else:
             cue_task_id = progress.add_task("Splitting cues", total=len(matched))
-            for raw_music, (cue_data, tracks) in matched.items():
-                progress.update(cue_task_id, advance=1)
-                split_audio(album, raw_music, cue_data, tracks, album / cue_data.title, progress)
-            progress.remove_task(cue_task_id)
+            try:
+                for raw_music, (cue_data, tracks) in matched.items():
+                    progress.update(cue_task_id, advance=1)
+                    split_audio(album, raw_music, cue_data, tracks, album / cue_data.title, progress)
+            finally:
+                progress.remove_task(cue_task_id)
         for raw_music in matched.keys():
             files_need_to_delete.add(raw_music)
     if ENABLE_DELETE and not DRY_RUN:
@@ -356,8 +378,8 @@ def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: Li
                 continue
             track_num_str = f"{track['track_num']:02d}"
             title = track['title'] or f"Track {track['track_num']}"
-            # safe_title = sanitize_filename(title)
-            output_path = output_dir / f"{track_num_str} - {title}.flac"
+            safe_title = sanitize_filename(title)
+            output_path = output_dir / f"{track_num_str} - {safe_title}.flac"
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -386,10 +408,12 @@ def split_audio(album: Path, raw_audio: Path, cue_data: ct.AlbumData, tracks: Li
             ffmpeg_cmds.append(cmd)
         #pprint(ffmpeg_cmds)
         track_task_id = progress.add_task("Splitting tracks", total=len(ffmpeg_cmds))
-        for cmd in ffmpeg_cmds:
-            progress.update(track_task_id, advance=1)
-            run(cmd)
-        progress.remove_task(track_task_id)
+        try:
+            for cmd in ffmpeg_cmds:
+                progress.update(track_task_id, advance=1)
+                run(cmd)
+        finally:
+            progress.remove_task(track_task_id)
     finally:
         os.chdir(original_cwe)
 
