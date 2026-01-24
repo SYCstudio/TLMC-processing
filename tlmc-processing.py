@@ -244,7 +244,9 @@ def log(msg: str, level: str="INFO"):
 
 def calculate_similarity(str1: str, str2: str) -> float:
     """计算两个字符串的相似度，返回 0.0 到 1.0 之间的值"""
-    return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+    ratio = SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+    # log(f"Calculating similarity between {str1} and {str2} ratio: {ratio}", "DEBUG")
+    return ratio
 
 def escape_rsync_pattern(pattern):
     """
@@ -317,8 +319,9 @@ def process_cues(album: Path, progress: Progress):
             files_need_to_delete.add(raw_music)
     if ENABLE_DELETE and not DRY_RUN:
         for file in files_need_to_delete:
-            log(f"Deleting {file}", "INFO")
-            file.unlink()
+            if file.exists():
+                log(f"Deleting {file}", "INFO")
+                file.unlink()
 
 def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path]) -> Tuple[Dict[Path, Tuple[str, str, List[Dict[str, Any]]]], Set[Path]]:
     files_need_to_delete: Set[Path] = set()
@@ -344,7 +347,9 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
         # check if the split file are already at place
         # for cue that have only one track and one raw file, the situation is filteded above
         expected_raw_file = list(expected_raw_files)[0]
-        if all(any(calculate_similarity(track['title'], raw_music_file.name) > 0.8 for raw_music_file in raw_music_files) for track in tracks):
+        if all(any(calculate_similarity(track['title'], raw_music_file.name) >= 0.6
+            or track['title'] in raw_music_file.name
+            for raw_music_file in raw_music_files) for track in tracks):
             files_need_to_delete.add(expected_raw_file) # if true, the combined file need to be deleted
             log(f"No need to split {cue}, all tracks are already cut into tracks, but the combined file need to be deleted", "INFO")
             continue
@@ -356,7 +361,7 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
             if score > best_score:
                 best_score = score
                 best_raw_music = raw_music
-        if best_raw_music is not None:
+        if best_raw_music is not None and best_score >= 0.8:
             matched[best_raw_music].append((album_title, album_performer, tracks))
             log(f"Matched {cue} to {best_raw_music}", "INFO")
     # delete the raw music files that are not matched in the matched dict
