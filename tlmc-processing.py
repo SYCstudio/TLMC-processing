@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, shutil, re, subprocess, argparse
+import os, shutil, re, subprocess, argparse, inspect, traceback
 from pathlib import Path
 import hashlib
 import cuetools as ct
@@ -91,7 +91,7 @@ def initialize_files():
 
 # 预先收集所有专辑
 def collect_albums(start_dir: Path) -> list[Path]:
-    albums = []
+    albums: list[Path] = []
     music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".wv"]
     def traverse(dir: Path, live: Live):
         nonlocal albums
@@ -144,6 +144,8 @@ def process_albums(albums: list[Path]):
                 # 1.1 move the album to error directory
                 log(f"========== Processing {album} failed ==========", "ERROR")
                 log(f"Error: {e}", "ERROR")
+                traceback_str = traceback.format_exc()
+                log(f"Traceback: {traceback_str}", "ERROR")
                 relative = album.relative_to(ROOT_DIR)
                 error_path = ERROR_DIR / relative
                 move_dir(album, error_path)
@@ -217,7 +219,21 @@ def run(cmd):
 
 def log(msg: str, level: str="INFO"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{timestamp}] [{level}] {msg}"
+    
+    # 如果是 ERROR 级别，获取调用者的行号信息
+    if level == "ERROR":
+        stack = inspect.stack()
+        # stack[1] 是调用 log 函数的代码位置
+        if len(stack) > 1:
+            caller_frame = stack[1]
+            filename = Path(caller_frame.filename).name
+            lineno = caller_frame.lineno
+            line = f"[{timestamp}] [{level}] [{filename}:{lineno}] {msg}"
+        else:
+            line = f"[{timestamp}] [{level}] {msg}"
+    else:
+        line = f"[{timestamp}] [{level}] {msg}"
+    
     safe_print(line)
     if not DRY_RUN:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -360,6 +376,8 @@ def match_cue_and_raw_music_files(cues: list[Path], raw_music_files: list[Path])
                     best_score = score
                     best_title = album_title
                     best_performer = album_performer
+            assert best_title is not None
+            assert best_performer is not None
             final_matched[raw_music] = (best_title, best_performer, tracks)
     return final_matched, files_need_to_delete
 
@@ -448,8 +466,8 @@ def read_cue_text(cue: Path) -> str:
 
 def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
     text = read_cue_text(cue)
-    album_title: str = None
-    album_performer: str = None
+    album_title: str | None = None
+    album_performer: str | None = None
     tracks: List[Dict[str, Any]] = []
     try:
         cue_data = ct.loads(text)
@@ -457,7 +475,7 @@ def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
             album_title = cue_data.title
         if cue_data.performer:
             album_performer = cue_data.performer
-        for track in tracks:
+        for track in cue_data.tracks:
             data = {
                 'file' : track.file,
                 'track_num' : track.track,
@@ -467,15 +485,15 @@ def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
                 'end_time' : None
             }
             tracks.append(data)
-        for track in tracks[:-1]:
-            track['end_time'] = tracks[tracks.index(track) + 1]['start_time']
+        for i in range(len(tracks) - 1):
+            tracks[i]['end_time'] = tracks[i + 1]['start_time']
     except Exception as e:
         log(f"Failed to parse {cue} with cue tools ({e!s}), fallback to manul parsering", "WARNING")
         FILE_RE = re.compile(r'^FILE\s+"(.+?)"\s+', re.IGNORECASE)
-        TRACK_RE = re.compile(r'^\s+TRACK\s+(\d+)\s+', re.IGNORECASE)
-        TITLE_RE = re.compile(r'^\s+TITLE\s+"(.+?)"', re.IGNORECASE)
-        PERFORMER_RE = re.compile(r'^\s+PERFORMER\s+"(.+?)"', re.IGNORECASE)
-        INDEX_RE = re.compile(r'^\s+INDEX\s+(\d+)\s+(\d+):(\d+):(\d+)', re.IGNORECASE)
+        TRACK_RE = re.compile(r'^TRACK\s+(\d+)\s+', re.IGNORECASE)
+        TITLE_RE = re.compile(r'^TITLE\s+"(.+?)"', re.IGNORECASE)
+        PERFORMER_RE = re.compile(r'^PERFORMER\s+"(.+?)"', re.IGNORECASE)
+        INDEX_RE = re.compile(r'^INDEX\s+(\d+)\s+(\d+):(\d+):(\d+)', re.IGNORECASE)
         current_track = None
         current_performer = None
         current_file = None
@@ -488,7 +506,7 @@ def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
                     album_performer = current_performer
             m = FILE_RE.match(line)
             if m:
-                current_file = m.group(1)
+                current_file = Path(m.group(1))
             m = TRACK_RE.match(line)
             if m:
                 if current_track:
@@ -519,8 +537,10 @@ def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
                     current_track['start_time'] = total_seconds
         if current_track is not None:
             tracks.append(current_track)
-        for track in tracks[:-1]:
-            track['end_time'] = tracks[tracks.index(track) + 1]['start_time']
+        for i in range(len(tracks) - 1):
+            tracks[i]['end_time'] = tracks[i + 1]['start_time']
+    assert album_title is not None
+    assert album_performer is not None
     return album_title, album_performer, tracks
 
 # ================= wav to flac =================
