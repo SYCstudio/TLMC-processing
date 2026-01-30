@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, shutil, re, subprocess, argparse, inspect, traceback
+import os, shutil, re, subprocess, inspect, traceback, threading
 from pathlib import Path
 import hashlib
 import cuetools as ct
@@ -8,6 +8,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from pprint import pprint
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, Live, Text
+import concurrent.futures
 
 # ================= CONFIG =================
 MAIN_DIR = Path(__file__).parent
@@ -17,11 +18,14 @@ ERROR_DIR = MAIN_DIR / "error"    # 错误目录
 DRY_RUN = False
 ENABLE_SPLIT = True
 ENABLE_DELETE = True
+ENABLE_MULTI_THREAD = True
 LOG_FILE = MAIN_DIR / "processing.log"
 ERROR_LOG_FILE = MAIN_DIR / "error.log"
 MOVED_ADDITIONAL_FILES_FILE = MAIN_DIR / "moved_additional_files.log"
 PROCESSED_FILE = MAIN_DIR / ".processed"
 ERROR_PROCESSED_FILE = MAIN_DIR / ".error_processed"
+FFMPEG_INNER_THREADS = 4
+THREAD_NUM = 8
 
 if not ERROR_DIR.exists():
     ERROR_DIR.mkdir(parents=True, exist_ok=True)
@@ -212,6 +216,38 @@ def safe_print(*args, **kwargs):
                 safe_args.append(str(arg).encode('ascii', 'replace').decode('ascii'))
         print(*safe_args, **kwargs)
 
+def run_with_threads(cmds: list[list[str]], title: str, progress: Progress):
+    if not ENABLE_MULTI_THREAD:
+        for cmd in cmds:
+            run(cmd)
+        return
+    try:
+        task_id = progress.add_task(title, total=len(cmds))
+        complete_count = 0
+        lock = threading.Lock()
+        def update_progress():
+            nonlocal complete_count
+            with lock:
+                complete_count += 1
+                progress.update(task_id, advance=1)
+        def run_with_progress(cmd: list[str]):
+            run(cmd)
+            update_progress()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=THREAD_NUM) as executor:
+            futures = [executor.submit(run_with_progress, cmd) for cmd in cmds]
+            concurrent.futures.wait(futures)
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    log(f"Error: {e}", "ERROR")
+                    traceback_str = traceback.format_exc()
+                    log(f"Traceback: {traceback_str}", "ERROR")
+                    raise e
+    finally:
+        progress.remove_task(task_id)
+        
+
 def run(cmd):
     log("[CMD] " + " ".join(cmd), "INFO")
     if not DRY_RUN:
@@ -233,6 +269,7 @@ def log(msg: str, level: str="INFO"):
             line = f"[{timestamp}] [{level}] {msg}"
     else:
         line = f"[{timestamp}] [{level}] {msg}"
+    
     safe_print(line)
     if not DRY_RUN:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -402,6 +439,7 @@ def split_audio(album: Path, raw_audio: Path, album_title: str, album_performer:
             output_path = output_dir / f"{track_num_str} - {safe_title}.flac"
             cmd = [
                 "ffmpeg",
+                "-threads", str(FFMPEG_INNER_THREADS),
                 "-y",
                 "-loglevel", "error",
                 "-i", str(raw_audio),
@@ -426,14 +464,7 @@ def split_audio(album: Path, raw_audio: Path, album_title: str, album_performer:
                 cmd.extend(["-metadata", f"album_artist={album_performer}"])
             cmd.append(str(output_path))
             ffmpeg_cmds.append(cmd)
-        #pprint(ffmpeg_cmds)
-        track_task_id = progress.add_task("Splitting tracks", total=len(ffmpeg_cmds))
-        try:
-            for cmd in ffmpeg_cmds:
-                progress.update(track_task_id, advance=1)
-                run(cmd)
-        finally:
-            progress.remove_task(track_task_id)
+        run_with_threads(ffmpeg_cmds, "Splitting tracks", progress)
     finally:
         os.chdir(original_cwe)
 
@@ -549,29 +580,28 @@ def parse_cue_file(cue: Path)-> Tuple[str, str, List[Dict[str, Any]]]:
 
 # ================= wav to flac =================
 def convert_musics_to_flac(files: List[Path], progress: Progress) -> None:
-    convert_task_id = progress.add_task("Converting music files to flac", total=len(files))
+    cmds = []
+    deleted_files = []
     for file in files:
-        progress.update(convert_task_id, advance=1)
-        convert_music_to_flac(file)
-    progress.remove_task(convert_task_id)
-
-def convert_music_to_flac(file: Path) -> None:
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-loglevel", "error",
-        "-i", str(file),
-        "-c:a", "flac",
-        "-compression_level", "8",
-        str(file.with_suffix(".flac")),
-    ]
-    if not DRY_RUN:
         if file.with_suffix(".flac").exists():
             log(f"{file.with_suffix('.flac')} already exists", "WARNING")
-        else:
-            log(f"Converting {file} to {file.with_suffix('.flac')}", "INFO")
-            run(cmd)
-        if ENABLE_DELETE:
+            continue
+        cmd = [
+            "ffmpeg",
+            "-threads", str(FFMPEG_INNER_THREADS),
+            "-y",
+            "-loglevel", "error",
+            "-i", str(file),
+            "-c:a", "flac",
+            "-compression_level", "8",
+            str(file.with_suffix(".flac")),
+        ]
+        cmds.append(cmd)
+        deleted_files.append(file)
+    if not DRY_RUN:
+        run_with_threads(cmds, "Converting music files to flac", progress)
+    if not DRY_RUN and ENABLE_DELETE:
+        for file in deleted_files:
             file.unlink()
 
 if __name__ == "__main__":
