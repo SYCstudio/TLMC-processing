@@ -96,7 +96,7 @@ def initialize_files():
 # 预先收集所有专辑
 def collect_albums(start_dir: Path) -> list[Path]:
     albums: list[Path] = []
-    music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".wv"]
+    music_suffix = [".cue", ".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".iso", ".wv", ".dsf"]
     def traverse(dir: Path, live: Live):
         nonlocal albums
         live.update(Text(f"Traversing: Albums collected: {len(albums)} at {dir}"))
@@ -114,11 +114,11 @@ def collect_albums(start_dir: Path) -> list[Path]:
 
 def collect_raw_music_files(album: Path) -> list[Path]:
     files = [f for f in album.iterdir() if f.is_file()]
-    raw_music_suffix = [".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".iso"]
+    raw_music_suffix = [".flac", ".wav", ".mp3", ".ogg", ".ape", ".aac", ".iso", ".wv", ".dsf"]
     return [f for f in files if f.suffix in raw_music_suffix]
 
 def process_albums(albums: list[Path]):
-    encode_need_to_convert = [".wav", ".wv", ".ape", ".tta", ".alac"]
+    encode_need_to_convert = [".wav", ".wv", ".ape", ".tta", ".alac", ".dsf"]
     with Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
